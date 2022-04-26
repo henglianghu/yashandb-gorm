@@ -1,6 +1,7 @@
 package yasdb
 
 import (
+    "database/sql"
     "fmt"
     "strings"
 
@@ -21,8 +22,13 @@ func (m Migrator) CurrentDatabase() (name string) {
 }
 
 func (m Migrator) CreateTable(values ...interface{}) error {
-    m.TryQuotifyReservedWords(values)
-    m.TryRemoveOnUpdate(values)
+    for _, value := range m.ReorderModels(values, false) {
+        m.TryQuotifyReservedWords(value)
+        m.TryRemoveOnUpdate(value)
+    }
+    if err := m.CreateSequence(values); err != nil {
+        return err
+    }
     return m.Migrator.CreateTable(values...)
 }
 
@@ -46,7 +52,7 @@ func (m Migrator) HasTable(value interface{}) bool {
     var count int64
 
     m.RunWithValue(value, func(stmt *gorm.Statement) error {
-        return m.DB.Raw("SELECT COUNT(*) FROM USER_TABLES WHERE TABLE_NAME = ?", stmt.Table).Row().Scan(&count)
+        return m.DB.Raw("SELECT COUNT(1) FROM USER_TABLES WHERE TABLE_NAME = ?", strings.ToUpper(stmt.Table)).Row().Scan(&count)
     })
 
     return count > 0
@@ -85,11 +91,38 @@ func (m Migrator) RenameTable(oldName, newName interface{}) (err error) {
     ).Error
 }
 
+// ColumnTypes return columnTypes []gorm.ColumnType and execErr error
+func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
+    columnTypes := make([]gorm.ColumnType, 0)
+    execErr := m.RunWithValue(value, func(stmt *gorm.Statement) (err error) {
+        rows, err := m.DB.Session(&gorm.Session{}).Table(stmt.Table).Limit(1).Rows()
+        if err != nil {
+            return err
+        }
+
+        defer func() {
+            err = rows.Close()
+        }()
+
+        var rawColumnTypes []*sql.ColumnType
+        rawColumnTypes, err = rows.ColumnTypes()
+        if err != nil {
+            return err
+        }
+
+        for _, c := range rawColumnTypes {
+            columnTypes = append(columnTypes, migrator.ColumnType{SQLColumnType: c})
+        }
+        return
+    })
+
+    return columnTypes, execErr
+}
+
 func (m Migrator) AddColumn(value interface{}, field string) error {
-    if !m.HasColumn(value, field) {
+    if m.HasColumn(value, field) {
         return nil
     }
-
     return m.RunWithValue(value, func(stmt *gorm.Statement) error {
         if field := stmt.Schema.LookUpField(field); field != nil {
             return m.DB.Exec(
@@ -141,7 +174,11 @@ func (m Migrator) AlterColumn(value interface{}, field string) error {
 func (m Migrator) HasColumn(value interface{}, field string) bool {
     var count int64
     return m.RunWithValue(value, func(stmt *gorm.Statement) error {
-        return m.DB.Raw("SELECT COUNT(*) FROM USER_TAB_COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?", stmt.Table, field).Row().Scan(&count)
+        return m.DB.Raw(
+            "SELECT COUNT(1) FROM USER_TAB_COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?",
+            strings.ToUpper(stmt.Table),
+            strings.ToUpper(field),
+        ).Row().Scan(&count)
     }) == nil && count > 0
 }
 
@@ -172,7 +209,9 @@ func (m Migrator) HasConstraint(value interface{}, name string) bool {
     var count int64
     return m.RunWithValue(value, func(stmt *gorm.Statement) error {
         return m.DB.Raw(
-            "SELECT COUNT(*) FROM USER_CONSTRAINTS WHERE TABLE_NAME = ? AND CONSTRAINT_NAME = ?", stmt.Table, name,
+            "SELECT COUNT(1) FROM USER_CONSTRAINTS WHERE TABLE_NAME = ? AND CONSTRAINT_NAME = ?",
+            strings.ToUpper(stmt.Table),
+            strings.ToUpper(name),
         ).Row().Scan(&count)
     }) == nil && count > 0
 }
@@ -193,11 +232,10 @@ func (m Migrator) HasIndex(value interface{}, name string) bool {
         if idx := stmt.Schema.LookIndex(name); idx != nil {
             name = idx.Name
         }
-
         return m.DB.Raw(
-            "SELECT COUNT(*) FROM USER_INDEXES WHERE TABLE_NAME = ? AND INDEX_NAME = ?",
-            m.Migrator.DB.NamingStrategy.TableName(stmt.Table),
-            m.Migrator.DB.NamingStrategy.IndexName(stmt.Table, name),
+            "SELECT COUNT(1) FROM USER_INDEXES WHERE TABLE_NAME = ? AND INDEX_NAME = ?",
+            strings.ToUpper(m.Migrator.DB.NamingStrategy.TableName(stmt.Table)),
+            strings.ToUpper(name),
         ).Row().Scan(&count)
     })
 
@@ -225,11 +263,14 @@ func (m Migrator) TryRemoveOnUpdate(value interface{}) error {
     })
 }
 
-func (m Migrator) TryQuotifyReservedWords(values []interface{}) error {
-    return m.RunWithValue(values, func(stmt *gorm.Statement) error {
+func (m Migrator) TryQuotifyReservedWords(value interface{}) error {
+    return m.RunWithValue(value, func(stmt *gorm.Statement) error {
         for idx, v := range stmt.Schema.DBNames {
             if IsReservedWord(v) {
-                stmt.Schema.DBNames[idx] = fmt.Sprintf(`"%s"`, v)
+                n := fmt.Sprintf(`"%s"`, v)
+                stmt.Schema.DBNames[idx] = n
+                stmt.Schema.FieldsByDBName[n] = stmt.Schema.FieldsByDBName[v]
+                delete(stmt.Schema.FieldsByDBName, v)
             }
         }
 
@@ -240,4 +281,23 @@ func (m Migrator) TryQuotifyReservedWords(values []interface{}) error {
         }
         return nil
     })
+}
+
+func (m Migrator) CreateSequence(values []interface{}) error {
+    for _, value := range m.ReorderModels(values, false) {
+        tx := m.DB.Session(&gorm.Session{})
+        if err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
+            for _, v := range stmt.Schema.Fields {
+                if v.AutoIncrement {
+                    tx.Exec(fmt.Sprintf("drop sequence %s", SeqName(v.Schema.Table)))
+                    s := fmt.Sprintf("create sequence %s start with 1 increment by 1", SeqName(v.Schema.Table))
+                    return tx.Exec(s).Error
+                }
+            }
+            return nil
+        }); err != nil {
+            return err
+        }
+    }
+    return nil
 }
