@@ -8,6 +8,7 @@ import (
     "gorm.io/gorm"
     "gorm.io/gorm/clause"
     "gorm.io/gorm/migrator"
+    "gorm.io/gorm/schema"
 )
 
 const (
@@ -200,77 +201,87 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
     return columnTypes, execErr
 }
 
-func (m Migrator) AddColumn(value interface{}, field string) error {
-    if m.HasColumn(value, field) {
+func (m Migrator) AddColumn(value interface{}, column string) error {
+    if m.HasColumn(value, column) {
         return nil
     }
     return m.RunWithValue(value, func(stmt *gorm.Statement) error {
-        if field := stmt.Schema.LookUpField(field); field != nil {
-            dbName := field.DBName
-            if IsReservedWord(dbName) {
-                dbName = fmt.Sprintf(`"%s"`, dbName)
-            }
-            return m.DB.Exec(
-                "ALTER TABLE ? ADD ? ?",
-                clause.Table{Name: stmt.Table}, clause.Column{Name: dbName}, m.DB.Migrator().FullDataTypeOf(field),
-            ).Error
+        field, err := m.lookUpField(stmt, column)
+        if err != nil {
+            return fmt.Errorf("add column failed: %s", err)
         }
-        return fmt.Errorf("failed to look up field with name: %s", field)
+        dbName := field.DBName
+        if IsReservedWord(dbName) {
+            dbName = fmt.Sprintf(`"%s"`, dbName)
+        }
+        return m.DB.Exec(
+            "ALTER TABLE ? ADD ? ?",
+            clause.Table{Name: stmt.Table}, clause.Column{Name: dbName}, m.DB.Migrator().FullDataTypeOf(field),
+        ).Error
     })
 }
 
-func (m Migrator) DropColumn(value interface{}, name string) error {
-    if !m.HasColumn(value, name) {
+func (m Migrator) DropColumn(value interface{}, column string) error {
+    if !m.HasColumn(value, column) {
         return nil
     }
 
     return m.RunWithValue(value, func(stmt *gorm.Statement) error {
-        if field := stmt.Schema.LookUpField(name); field != nil {
-            name = field.DBName
+        field, err := m.lookUpField(stmt, column)
+        if err != nil {
+            return fmt.Errorf("drop column failed: %s", err)
         }
 
         return m.DB.Exec(
             "ALTER TABLE ? DROP ?",
             clause.Table{Name: stmt.Table},
-            clause.Column{Name: name},
+            clause.Column{Name: field.DBName},
         ).Error
     })
 }
 
-func (m Migrator) AlterColumn(value interface{}, field string) error {
-    // field = strings.ToUpper(field)
-    if !m.HasColumn(value, field) {
+func (m Migrator) AlterColumn(value interface{}, column string) error {
+    if !m.HasColumn(value, column) {
         return nil
     }
 
     return m.RunWithValue(value, func(stmt *gorm.Statement) error {
-        if field := stmt.Schema.LookUpField(field); field != nil {
-            dbName := field.DBName
-            if IsReservedWord(dbName) {
-                dbName = fmt.Sprintf(`"%s"`, dbName)
-            }
-            return m.DB.Exec(
-                "ALTER TABLE ? MODIFY ? ?",
-                clause.Table{Name: stmt.Table},
-                clause.Column{Name: dbName},
-                m.FullDataTypeOf(field),
-            ).Error
+        field, err := m.lookUpField(stmt, column)
+        if err != nil {
+            return fmt.Errorf("alter column failed: %s", err)
         }
-        return fmt.Errorf("failed to look up field with name: %s", field)
+        dbName := field.DBName
+        if IsReservedWord(dbName) {
+            dbName = fmt.Sprintf(`"%s"`, dbName)
+        }
+        return m.DB.Exec(
+            "ALTER TABLE ? MODIFY ? ?",
+            clause.Table{Name: stmt.Table},
+            clause.Column{Name: dbName},
+            m.FullDataTypeOf(field),
+        ).Error
     })
 }
 
-func (m Migrator) HasColumn(value interface{}, field string) bool {
+func (m Migrator) lookUpField(stmt *gorm.Statement, column string) (*schema.Field, error) {
+    field := stmt.Schema.LookUpField(column)
+    if field == nil {
+        return nil, fmt.Errorf("field: %s of table: %s not found in stmt.Schema", column, stmt.Table)
+    }
+    return field, nil
+}
+
+func (m Migrator) HasColumn(value interface{}, column string) bool {
     var count int64
     return m.RunWithValue(value, func(stmt *gorm.Statement) error {
-        if field := stmt.Schema.LookUpField(field); field != nil {
-            return m.DB.Raw(
-                "SELECT COUNT(1) FROM USER_TAB_COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?",
-                stmt.Table,
-                field.DBName,
-            ).Row().Scan(&count)
+        field := stmt.Schema.LookUpField(column)
+        if field == nil {
+            return nil
         }
-        return fmt.Errorf("failed to look up field with name: %s", field)
+        return m.DB.Raw("SELECT COUNT(1) FROM USER_TAB_COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?",
+            strings.ToUpper(stmt.Table), strings.ToUpper(field.DBName),
+        ).Row().Scan(&count)
+
     }) == nil && count > 0
 }
 
@@ -382,7 +393,7 @@ func (m Migrator) TryQuotifyReservedWords(value interface{}) error {
 func (m Migrator) dropSequenceIfExists(db *gorm.DB, sequenceName string) error {
     return db.Transaction(func(tx *gorm.DB) error {
         var count int
-        if err := tx.Raw("SELECT COUNT(1) FROM USER_SEQUENCES WHERE SEQUENCE_NAME = ?", sequenceName).Scan(&count).Error; err != nil {
+        if err := tx.Raw("SELECT COUNT(1) FROM USER_SEQUENCES WHERE SEQUENCE_NAME = ?", sequenceName).Row().Scan(&count); err != nil {
             return err
         }
         if count == 0 {
