@@ -10,6 +10,10 @@ import (
     "gorm.io/gorm/migrator"
 )
 
+const (
+    COLUMNS_HAVE_BEEN_INDEXED = "columns have been indexed"
+)
+
 type Migrator struct {
     migrator.Migrator
 }
@@ -70,6 +74,9 @@ func (m Migrator) AutoMigrate(values ...interface{}) error {
                 for _, idx := range stmt.Schema.ParseIndexes() {
                     if !tx.Migrator().HasIndex(value, idx.Name) {
                         if err := tx.Migrator().CreateIndex(value, idx.Name); err != nil {
+                            if strings.Contains(strings.ToLower(err.Error()), COLUMNS_HAVE_BEEN_INDEXED) {
+                                return nil
+                            }
                             return err
                         }
                     }
