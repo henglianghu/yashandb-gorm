@@ -372,15 +372,35 @@ func (m Migrator) TryQuotifyReservedWords(value interface{}) error {
     })
 }
 
+func (m Migrator) dropSequenceIfExists(db *gorm.DB, sequenceName string) error {
+    return db.Transaction(func(tx *gorm.DB) error {
+        var count int
+        if err := tx.Raw("SELECT COUNT(1) FROM USER_SEQUENCES WHERE SEQUENCE_NAME = ?", sequenceName).Scan(&count).Error; err != nil {
+            return err
+        }
+        if count == 0 {
+            return nil
+        }
+        dropSequenceIfExists := fmt.Sprintf("DROP SEQUENCE %s", sequenceName)
+        if err := tx.Exec(dropSequenceIfExists).Error; err != nil {
+            return err
+        }
+        return nil
+    })
+}
+
 func (m Migrator) CreateSequence(values []interface{}) error {
     for _, value := range m.ReorderModels(values, false) {
         tx := m.DB.Session(&gorm.Session{})
         if err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
             for _, v := range stmt.Schema.Fields {
+                sequenceName := GenSequenceName(v.Schema.Table)
                 if v.AutoIncrement {
-                    tx.Exec(fmt.Sprintf("drop sequence %s", SeqName(v.Schema.Table)))
-                    s := fmt.Sprintf("create sequence %s start with 1 increment by 1", SeqName(v.Schema.Table))
-                    return tx.Exec(s).Error
+                    if err := m.dropSequenceIfExists(tx, sequenceName); err != nil {
+                        return err
+                    }
+                    createSequence := fmt.Sprintf("CREATE SEQUENCE %s START WITH 1 INCREMENT BY 1", sequenceName)
+                    return tx.Exec(createSequence).Error
                 }
             }
             return nil
