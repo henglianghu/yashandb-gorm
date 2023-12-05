@@ -1,9 +1,9 @@
-module git.yasdb.com/cod-noah/gorm-yasdb
+module git.yasdb.com/go/gorm-yasdb
 
 go 1.16
 
 require (
-	git.yasdb.com/go/yasdb-go v1.3.0
+	git.yasdb.com/go/yasdb-go v0.0.0-20230815022140-41377b36c259
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emirpasic/gods v1.18.1
 	github.com/stretchr/testify v1.5.1 // indirect
