@@ -63,14 +63,13 @@ func Create(db *gorm.DB) {
 		}
 
 		if !db.DryRun {
-			if hasDefaultValues && !hasConflict {
-				for idx, vals := range values.Values {
-					// HACK HACK: replace values one by one, assuming its value layout will be the same all the time, i.e. aligned
-					copy(stmt.Vars, vals)
-					switch result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...); err {
-					case nil: // success
-						db.RowsAffected, _ = result.RowsAffected()
-
+			for idx, vals := range values.Values {
+				copy(stmt.Vars, vals)
+				// HACK HACK: replace values one by one, assuming its value layout will be the same all the time, i.e. aligned
+				switch result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...); err {
+				case nil: // success
+					db.RowsAffected, _ = result.RowsAffected()
+					if hasDefaultValues && !hasConflict {
 						insertTo := stmt.ReflectValue
 						switch insertTo.Kind() {
 						case reflect.Slice, reflect.Array:
@@ -95,17 +94,12 @@ func Create(db *gorm.DB) {
 							},
 						)
 						// }
-					default: // failure
-						_ = db.AddError(err)
 					}
-				}
-			} else {
-				switch result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...); err {
-				case nil: // success
-					db.RowsAffected, _ = result.RowsAffected()
+
 				default: // failure
 					_ = db.AddError(err)
 				}
+
 			}
 		}
 	}
