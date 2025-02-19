@@ -61,14 +61,20 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	d.DefaultStringSize = 1024
 
 	// register callbacks
-	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{WithReturning: true})
+	config := &callbacks.Config{
+		CreateClauses: []string{"INSERT", "VALUES", "ON CONFLICT", "RETURNING"},
+	}
+	callbacks.RegisterDefaultCallbacks(db, config)
 
 	d.DriverName = "yasdb"
 
 	if d.Conn != nil {
 		db.ConnPool = d.Conn
 	} else {
-		db.ConnPool, _ = sql.Open(d.DriverName, d.DSN)
+		db.ConnPool, err = sql.Open(d.DriverName, d.DSN)
+		if err != nil {
+			return
+		}
 	}
 
 	for k, v := range d.ClauseBuilders() {
@@ -221,9 +227,9 @@ func (d Dialector) RewriteLimit(c clause.Clause, builder clause.Builder) {
 				}
 			}
 		}
-		if limit := limit.Limit; limit > 0 {
+		if limit := limit.Limit; *limit > 0 {
 			_, _ = builder.WriteString(" LIMIT ")
-			_, _ = builder.WriteString(strconv.Itoa(limit))
+			_, _ = builder.WriteString(strconv.Itoa(*limit))
 		}
 		if offset := limit.Offset; offset > 0 {
 			_, _ = builder.WriteString(" OFFSET ")

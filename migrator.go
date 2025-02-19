@@ -193,7 +193,7 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 		}
 
 		for _, c := range rawColumnTypes {
-			columnTypes = append(columnTypes, c)
+			columnTypes = append(columnTypes, migrator.ColumnType{SQLColumnType: c})
 		}
 		return
 	})
