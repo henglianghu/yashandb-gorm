@@ -210,10 +210,7 @@ func (m Migrator) AddColumn(value interface{}, column string) error {
 		if err != nil {
 			return fmt.Errorf("add column failed: %s", err)
 		}
-		dbName := field.DBName
-		if IsReservedWord(dbName) {
-			dbName = fmt.Sprintf(`"%s"`, dbName)
-		}
+		dbName := m.maybeQuoteName(field.DBName)
 		return m.DB.Exec(
 			"ALTER TABLE ? ADD ? ?",
 			clause.Table{Name: stmt.Table}, clause.Column{Name: dbName}, m.DB.Migrator().FullDataTypeOf(field),
@@ -235,7 +232,7 @@ func (m Migrator) DropColumn(value interface{}, column string) error {
 		return m.DB.Exec(
 			"ALTER TABLE ? DROP ?",
 			clause.Table{Name: stmt.Table},
-			clause.Column{Name: field.DBName},
+			clause.Column{Name: m.maybeQuoteName(field.DBName)},
 		).Error
 	})
 }
@@ -250,10 +247,7 @@ func (m Migrator) AlterColumn(value interface{}, column string) error {
 		if err != nil {
 			return fmt.Errorf("alter column failed: %s", err)
 		}
-		dbName := field.DBName
-		if IsReservedWord(dbName) {
-			dbName = fmt.Sprintf(`"%s"`, dbName)
-		}
+		dbName := m.maybeQuoteName(field.DBName)
 		return m.DB.Exec(
 			"ALTER TABLE ? MODIFY ? ?",
 			clause.Table{Name: stmt.Table},
@@ -365,11 +359,25 @@ func (m Migrator) TryRemoveOnUpdate(value interface{}) error {
 	})
 }
 
+func (m Migrator) maybeQuoteName(name string) string {
+	name = TryRemoveQuotes(name)
+	namingCaseSensitive := false
+	if d, ok := m.DB.Dialector.(*Dialector); ok && d.Config != nil {
+		namingCaseSensitive = d.NamingCaseSensitive
+	}
+	if d, ok := m.DB.Dialector.(Dialector); ok && d.Config != nil {
+		namingCaseSensitive = d.NamingCaseSensitive
+	}
+	if namingCaseSensitive {
+		return name
+	}
+	return ConvertNameToFormat(name)
+}
+
 func (m Migrator) TryQuotifyReservedWords(value interface{}) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		for idx, v := range stmt.Schema.DBNames {
-			if IsReservedWord(v) {
-				n := fmt.Sprintf(`"%s"`, v)
+			if n := m.maybeQuoteName(v); n != v {
 				stmt.Schema.DBNames[idx] = n
 				stmt.Schema.FieldsByDBName[n] = stmt.Schema.FieldsByDBName[v]
 				delete(stmt.Schema.FieldsByDBName, v)
@@ -377,14 +385,9 @@ func (m Migrator) TryQuotifyReservedWords(value interface{}) error {
 		}
 
 		for _, v := range stmt.Schema.Fields {
-			if IsReservedWord(v.DBName) {
-				v.DBName = fmt.Sprintf(`"%s"`, v.DBName)
-			}
+			v.DBName = m.maybeQuoteName(v.DBName)
 		}
-		tableName := stmt.Schema.Table
-		if IsReservedWord(tableName) {
-			stmt.Schema.Table = fmt.Sprintf(`"%s"`, tableName)
-		}
+		stmt.Schema.Table = m.maybeQuoteName(stmt.Schema.Table)
 		return nil
 	})
 }
