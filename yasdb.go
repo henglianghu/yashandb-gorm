@@ -23,10 +23,11 @@ const (
 )
 
 type Config struct {
-	DriverName        string
-	DSN               string
-	Conn              *sql.DB
-	DefaultStringSize uint
+	DriverName          string
+	DSN                 string
+	Conn                *sql.DB
+	DefaultStringSize   uint
+	NamingCaseSensitive bool
 }
 
 type Dialector struct {
@@ -54,8 +55,10 @@ func (d Dialector) Name() string {
 }
 
 func (d Dialector) Initialize(db *gorm.DB) (err error) {
-	if namingStrategy, ok := db.NamingStrategy.(schema.NamingStrategy); ok {
+	if !d.NamingCaseSensitive {
+		if namingStrategy, ok := db.NamingStrategy.(schema.NamingStrategy); ok {
 		db.NamingStrategy = Namer{NamingStrategy: namingStrategy}
+	}
 	}
 
 	d.DefaultStringSize = 1024
@@ -85,6 +88,9 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 		return
 	}
 
+	registerNormalizeSchemaCallbacks(db)
+	registerColumnMappingCallbacks(db)
+
 	return
 }
 
@@ -96,42 +102,85 @@ func (d Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 	}
 }
 
+func resolveOnConflictDoUpdates(onConflict clause.OnConflict, stmt *gorm.Statement) clause.Set {
+	if onConflict.DoNothing {
+		return nil
+	}
+	if len(onConflict.DoUpdates) > 0 {
+		return onConflict.DoUpdates
+	}
+	if stmt == nil || stmt.Schema == nil {
+		return nil
+	}
+
+	collectNonPrimaryColumns := func() []string {
+		columns := make([]string, 0)
+		for _, field := range stmt.Schema.Fields {
+			if field.PrimaryKey {
+				continue
+			}
+			if field.AutoCreateTime > 0 && field.AutoUpdateTime == 0 {
+				continue
+			}
+			columns = append(columns, field.DBName)
+		}
+		return columns
+	}
+
+	if onConflict.UpdateAll || len(onConflict.DoUpdates) == 0 {
+		if columns := collectNonPrimaryColumns(); len(columns) > 0 {
+			return clause.AssignmentColumns(columns)
+		}
+	}
+	return nil
+}
+
+func writeConflictAssignment(builder clause.Builder, assignment clause.Assignment) {
+	col := assignment.Column
+	col.Table = ""
+	builder.WriteQuoted(col)
+	_ = builder.WriteByte('=')
+
+	if column, ok := assignment.Value.(clause.Column); ok && column.Table == "excluded" {
+		_, _ = builder.WriteString("VALUES(")
+		builder.WriteQuoted(clause.Column{Name: column.Name})
+		_ = builder.WriteByte(')')
+		return
+	}
+	if column, ok := assignment.Value.(clause.Column); ok {
+		column.Table = ""
+		builder.WriteQuoted(column)
+		return
+	}
+	builder.AddVar(builder, assignment.Value)
+}
+
 func (d Dialector) RewriteConflict(c clause.Clause, builder clause.Builder) {
 	if onConflict, ok := c.Expression.(clause.OnConflict); ok {
+		stmt, ok := builder.(*gorm.Statement)
+		if !ok {
+			_, _ = builder.WriteString("ON DUPLICATE KEY UPDATE ")
+			return
+		}
+		doUpdates := resolveOnConflictDoUpdates(onConflict, stmt)
+
 		_, _ = builder.WriteString("ON DUPLICATE KEY UPDATE ")
-		if len(onConflict.DoUpdates) == 0 {
-			if s := builder.(*gorm.Statement).Schema; s != nil {
-				var column clause.Column
-				onConflict.DoNothing = false
-
-				if s.PrioritizedPrimaryField != nil {
-					column = clause.Column{Name: s.PrioritizedPrimaryField.DBName}
-				} else if len(s.DBNames) > 0 {
-					column = clause.Column{Name: s.DBNames[0]}
-				}
-
-				if column.Name != "" {
-					onConflict.DoUpdates = []clause.Assignment{{Column: column, Value: column}}
-				}
+		if len(doUpdates) == 0 {
+			// 无字段需要更新时，用主键自赋值实现空操作，避免无意义的 VALUES(主键) 更新
+			if stmt != nil && stmt.Schema != nil && stmt.Schema.PrioritizedPrimaryField != nil {
+				col := clause.Column{Name: stmt.Schema.PrioritizedPrimaryField.DBName}
+				builder.WriteQuoted(col)
+				_ = builder.WriteByte('=')
+				builder.WriteQuoted(col)
 			}
+			return
 		}
 
-		for idx, assignment := range onConflict.DoUpdates {
+		for idx, assignment := range doUpdates {
 			if idx > 0 {
 				_ = builder.WriteByte(',')
 			}
-
-			builder.WriteQuoted(assignment.Column)
-			_ = builder.WriteByte('=')
-			if column, ok := assignment.Value.(clause.Column); ok && column.Table == "excluded" {
-				column.Table = ""
-				// column.Name = TryQuoteReservedWord(column.Name)
-				_, _ = builder.WriteString("(")
-				builder.WriteQuoted(column)
-				_ = builder.WriteByte(')')
-			} else {
-				builder.AddVar(builder, assignment.Value)
-			}
+			writeConflictAssignment(builder, assignment)
 		}
 	}
 }
@@ -260,7 +309,19 @@ func (d Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, v inter
 }
 
 func (d Dialector) QuoteTo(writer clause.Writer, str string) {
-	_, _ = writer.WriteString(str)
+	if len(str) >= 2 && str[0] == '"' && str[len(str)-1] == '"' {
+		_, _ = writer.WriteString(str)
+		return
+	}
+	if d.NamingCaseSensitive || IsReservedWord(str) {
+		if IsReservedWord(str) && !d.NamingCaseSensitive {
+			_, _ = writer.WriteString(fmt.Sprintf(`"%s"`, strings.ToUpper(str)))
+		} else {
+			_, _ = writer.WriteString(fmt.Sprintf(`"%s"`, str))
+		}
+		return
+	}
+	_, _ = writer.WriteString(ConvertNameToFormat(str))
 }
 
 var numericPlaceholder = regexp.MustCompile(`:(\d+)`)

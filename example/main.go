@@ -21,7 +21,7 @@ type TaskResult struct {
 }
 
 func main() {
-	dsn := "sys/yasdb_123@192.168.6.177:1688"
+	dsn := "regress/regress@172.16.90.80:1688"
 	db, err := gorm.Open(yasdb.Open(dsn), &gorm.Config{})
 	if err != nil {
 		panic(err)
