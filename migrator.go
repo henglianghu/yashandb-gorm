@@ -364,8 +364,7 @@ func (m Migrator) maybeQuoteName(name string) string {
 	namingCaseSensitive := false
 	if d, ok := m.DB.Dialector.(*Dialector); ok && d.Config != nil {
 		namingCaseSensitive = d.NamingCaseSensitive
-	}
-	if d, ok := m.DB.Dialector.(Dialector); ok && d.Config != nil {
+	} else if d, ok := m.DB.Dialector.(Dialector); ok && d.Config != nil {
 		namingCaseSensitive = d.NamingCaseSensitive
 	}
 	if namingCaseSensitive {

@@ -157,7 +157,11 @@ func writeConflictAssignment(builder clause.Builder, assignment clause.Assignmen
 
 func (d Dialector) RewriteConflict(c clause.Clause, builder clause.Builder) {
 	if onConflict, ok := c.Expression.(clause.OnConflict); ok {
-		stmt, _ := builder.(*gorm.Statement)
+		stmt, ok := builder.(*gorm.Statement)
+		if !ok {
+			_, _ = builder.WriteString("ON DUPLICATE KEY UPDATE ")
+			return
+		}
 		doUpdates := resolveOnConflictDoUpdates(onConflict, stmt)
 
 		_, _ = builder.WriteString("ON DUPLICATE KEY UPDATE ")

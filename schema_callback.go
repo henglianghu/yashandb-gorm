@@ -6,8 +6,7 @@ func registerNormalizeSchemaCallbacks(db *gorm.DB) {
 	normalize := func(db *gorm.DB) {
 		if dialector, ok := db.Dialector.(*Dialector); ok && dialector.Config != nil && dialector.NamingCaseSensitive {
 			return
-		}
-		if dialector, ok := db.Dialector.(Dialector); ok && dialector.Config != nil && dialector.NamingCaseSensitive {
+		} else if dialector, ok := db.Dialector.(Dialector); ok && dialector.Config != nil && dialector.NamingCaseSensitive {
 			return
 		}
 		if db.Statement != nil && db.Statement.Schema != nil {

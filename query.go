@@ -101,8 +101,7 @@ func addNestedFieldMappings(columnMapping map[string]string, aliasName string, j
 func isNamingCaseSensitive(db *gorm.DB) bool {
 	if dialector, ok := db.Dialector.(*Dialector); ok && dialector.Config != nil {
 		return dialector.NamingCaseSensitive
-	}
-	if dialector, ok := db.Dialector.(Dialector); ok && dialector.Config != nil {
+	} else if dialector, ok := db.Dialector.(Dialector); ok && dialector.Config != nil {
 		return dialector.NamingCaseSensitive
 	}
 	return false
